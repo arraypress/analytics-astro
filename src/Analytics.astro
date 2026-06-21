@@ -1,0 +1,230 @@
+---
+/**
+ * Analytics.astro
+ * ---------------
+ *
+ * Renders the canonical <script> tags for every provider you pass in.
+ * Drop it once in your `<head>`. Eight providers are supported:
+ * Plausible, Cloudflare, Umami, Fathom, Simple, GoatCounter, GA4, and a
+ * `custom` escape hatch.
+ *
+ * Privacy guarantees:
+ *   - With `productionOnly` (default) NO scripts emit in `astro dev`.
+ *   - With `respectDNT` (default) an inline DNT/GPC check runs BEFORE any
+ *     third-party script is fetched — if the user signals Do-Not-Track or
+ *     Global Privacy Control, nothing beacons.
+ *   - Cookie-using providers (`ga4`, `custom`) additionally wait for an
+ *     explicit consent signal (a localStorage key your banner sets, plus
+ *     a window event so they fire on accept without a reload).
+ *
+ * @example
+ *   ---
+ *   import { Analytics } from '@arraypress/analytics-astro';
+ *   ---
+ *   <head>
+ *     <Analytics providers={[{ type: 'plausible', domain: 'example.com' }]} />
+ *   </head>
+ */
+import type { AnalyticsProps } from './types';
+
+const {
+	providers = [],
+	respectDNT = true,
+	productionOnly = true,
+	consentStorageKey = 'cookie-consent',
+	consentAcceptedValue = 'accepted',
+	consentEventName = 'consent-accepted',
+} = Astro.props as AnalyticsProps;
+
+/* Bail before rendering anything when there are no providers, or we're
+ * in dev and productionOnly hasn't been turned off. */
+const enabled = providers.length > 0 && (!productionOnly || import.meta.env.PROD);
+
+/* DNT/GPC short-circuit + consent helper. Lives inline so it runs before
+ * any provider script is even fetched: the providers below depend on
+ * `window.__apAnalyticsAllowed` (set here) being truthy and bail
+ * otherwise. `window.__apConsentOk()` returns true once the user has
+ * accepted via your banner — used to gate ga4 + custom. */
+const consentFn = `window.__apConsentOk=function(){try{return localStorage.getItem(${JSON.stringify(consentStorageKey)})===${JSON.stringify(consentAcceptedValue)};}catch(_){return false;}};`;
+const dntGuard = respectDNT
+	? `(function(){var dnt=(navigator.doNotTrack==='1'||window.doNotTrack==='1'||navigator.msDoNotTrack==='1');var gpc=navigator.globalPrivacyControl===true;window.__apAnalyticsAllowed=!(dnt||gpc);${consentFn}})();`
+	: `window.__apAnalyticsAllowed=true;${consentFn}`;
+---
+{enabled && (
+	<>
+		<script is:inline set:html={dntGuard}></script>
+
+		{providers.map(provider => {
+			/* Plausible — `data-domain` is the only required attribute.
+			 * `apiHost` overrides the Events API host for self-hosted. */
+			if (provider.type === 'plausible') {
+				const src = provider.src ?? 'https://plausible.io/js/script.js';
+				return (
+					<script
+						is:inline
+						set:html={`if(window.__apAnalyticsAllowed){
+							var s=document.createElement('script');
+							s.defer=true;s.src=${JSON.stringify(src)};
+							s.setAttribute('data-domain',${JSON.stringify(provider.domain)});
+							${provider.apiHost ? `s.setAttribute('data-api',${JSON.stringify(provider.apiHost)});` : ''}
+							document.head.appendChild(s);
+						}`}
+					/>
+				);
+			}
+
+			/* Cloudflare Web Analytics — beacon-style, `token` from the
+			 * dashboard, passed via the JSON `data-cf-beacon` config. */
+			if (provider.type === 'cloudflare') {
+				const beacon = JSON.stringify({ token: provider.token });
+				return (
+					<script
+						is:inline
+						set:html={`if(window.__apAnalyticsAllowed){
+							var s=document.createElement('script');
+							s.defer=true;
+							s.src='https://static.cloudflareinsights.com/beacon.min.js';
+							s.setAttribute('data-cf-beacon',${JSON.stringify(beacon)});
+							document.head.appendChild(s);
+						}`}
+					/>
+				);
+			}
+
+			/* Umami — `data-website-id` on the script tag. */
+			if (provider.type === 'umami') {
+				const src = provider.src ?? 'https://cloud.umami.is/script.js';
+				return (
+					<script
+						is:inline
+						set:html={`if(window.__apAnalyticsAllowed){
+							var s=document.createElement('script');
+							s.defer=true;s.src=${JSON.stringify(src)};
+							s.setAttribute('data-website-id',${JSON.stringify(provider.websiteId)});
+							document.head.appendChild(s);
+						}`}
+					/>
+				);
+			}
+
+			/* Fathom Lite — `data-site` ID, loads from cdn.usefathom.com. */
+			if (provider.type === 'fathom') {
+				return (
+					<script
+						is:inline
+						set:html={`if(window.__apAnalyticsAllowed){
+							var s=document.createElement('script');
+							s.defer=true;
+							s.src='https://cdn.usefathom.com/script.js';
+							s.setAttribute('data-site',${JSON.stringify(provider.siteId)});
+							document.head.appendChild(s);
+						}`}
+					/>
+				);
+			}
+
+			/* Simple Analytics — no config attributes needed. */
+			if (provider.type === 'simple') {
+				const src = provider.src ?? 'https://scripts.simpleanalyticscdn.com/latest.js';
+				return (
+					<script
+						is:inline
+						set:html={`if(window.__apAnalyticsAllowed){
+							var s=document.createElement('script');
+							s.defer=true;s.src=${JSON.stringify(src)};
+							document.head.appendChild(s);
+						}`}
+					/>
+				);
+			}
+
+			/* GoatCounter — async tracker; `data-goatcounter` endpoint. */
+			if (provider.type === 'goatcounter') {
+				return (
+					<script
+						is:inline
+						set:html={`if(window.__apAnalyticsAllowed){
+							var s=document.createElement('script');
+							s.async=true;
+							s.src='//gc.zgo.at/count.js';
+							s.setAttribute('data-goatcounter',${JSON.stringify(provider.endpoint)});
+							document.head.appendChild(s);
+						}`}
+					/>
+				);
+			}
+
+			/* Google Analytics 4 — the two-script gtag pattern. NOT
+			 * cookie-free; gated on the consent signal AND the DNT/GPC
+			 * check. Fires once on load if consent is already stored, and
+			 * re-arms via the consent event so the first accept after
+			 * page load also injects without a reload. */
+			if (provider.type === 'ga4') {
+				const measurementId = provider.measurementId;
+				return (
+					<script
+						is:inline
+						set:html={`(function(){
+							var fired=false;
+							function inject(){
+								if(fired) return;
+								if(!window.__apAnalyticsAllowed) return;
+								if(!window.__apConsentOk || !window.__apConsentOk()) return;
+								fired=true;
+								var s=document.createElement('script');
+								s.async=true;
+								s.src='https://www.googletagmanager.com/gtag/js?id=${measurementId}';
+								document.head.appendChild(s);
+								window.dataLayer = window.dataLayer || [];
+								function gtag(){dataLayer.push(arguments);}
+								window.gtag = gtag;
+								gtag('js', new Date());
+								gtag('config', ${JSON.stringify(measurementId)});
+							}
+							inject();
+							window.addEventListener(${JSON.stringify(consentEventName)}, inject);
+						})();`}
+					/>
+				);
+			}
+
+			/* Custom — escape hatch. Same consent gating as ga4 because we
+			 * can't introspect what the embedded HTML does. */
+			if (provider.type === 'custom') {
+				const customHtml = provider.html;
+				return (
+					<script
+						is:inline
+						set:html={`(function(){
+							var fired=false;
+							function inject(){
+								if(fired) return;
+								if(!window.__apAnalyticsAllowed) return;
+								if(!window.__apConsentOk || !window.__apConsentOk()) return;
+								fired=true;
+								var holder=document.createElement('div');
+								holder.innerHTML=${JSON.stringify(customHtml)};
+								Array.from(holder.childNodes).forEach(function(node){
+									if(node.tagName==='SCRIPT'){
+										var s=document.createElement('script');
+										for(var i=0;i<node.attributes.length;i++){
+											s.setAttribute(node.attributes[i].name, node.attributes[i].value);
+										}
+										s.text=node.textContent||'';
+										document.head.appendChild(s);
+									} else {
+										document.head.appendChild(node);
+									}
+								});
+							}
+							inject();
+							window.addEventListener(${JSON.stringify(consentEventName)}, inject);
+						})();`}
+					/>
+				);
+			}
+
+			return null;
+		})}
+	</>
+)}
