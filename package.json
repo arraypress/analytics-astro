@@ -1,6 +1,6 @@
 {
   "name": "@arraypress/analytics-astro",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Multi-provider analytics for Astro — Plausible, Cloudflare, Umami, Fathom, Simple, GoatCounter, GA4, custom. DNT/GPC short-circuit + consent gating, one component.",
   "type": "module",
   "files": [
@@ -47,7 +47,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "peerDependencies": {
-    "astro": "^6.0.0"
+    "astro": "^6.0.0 || ^7.0.0"
   },
   "scripts": {
     "test": "vitest run",
